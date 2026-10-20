@@ -47,7 +47,7 @@ func newRemoteReusableWorkflowExecutor(rc *RunContext) common.Executor {
 func newActionCacheReusableWorkflowExecutor(rc *RunContext, filename string, remoteReusableWorkflow *remoteReusableWorkflow) common.Executor {
 	return func(ctx context.Context) error {
 		ghctx := rc.getGithubContext(ctx)
-		remoteReusableWorkflow.URL = ghctx.ServerURL
+		remoteReusableWorkflow.URL = rc.Config.actionsURL(ghctx.ServerURL)
 		sha, err := rc.Config.ActionCache.Fetch(ctx, filename, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, ghctx.Token)
 		if err != nil {
 			return err
@@ -100,7 +100,7 @@ func cloneIfRequired(rc *RunContext, remoteReusableWorkflow remoteReusableWorkfl
 			return notExists
 		},
 		func(ctx context.Context) error {
-			remoteReusableWorkflow.URL = rc.getGithubContext(ctx).ServerURL
+			remoteReusableWorkflow.URL = rc.Config.actionsURL(rc.getGithubContext(ctx).ServerURL)
 			return git.NewGitCloneExecutor(git.NewGitCloneExecutorInput{
 				URL:         remoteReusableWorkflow.CloneURL(),
 				Ref:         remoteReusableWorkflow.Ref,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
 	docker_container "github.com/moby/moby/api/types/container"
 	"github.com/nektos/act/pkg/common"
@@ -62,6 +63,15 @@ type Config struct {
 	ContainerNetworkMode               docker_container.NetworkMode // the network mode of job containers (the value of --network)
 	ActionCache                        ActionCache                  // Use a custom ActionCache Implementation
 	ConcurrentJobs                     int                          // Number of max concurrent jobs
+	ActionsURL                         string                       // base URL remote actions and reusable workflows are cloned from (default: github.server_url)
+}
+
+// actionsURL is where `uses: owner/repo@ref` is fetched from.
+func (config *Config) actionsURL(serverURL string) string {
+	if config.ActionsURL != "" {
+		return strings.TrimSuffix(config.ActionsURL, "/")
+	}
+	return serverURL
 }
 
 func (config *Config) GetConcurrentJobs() int {
