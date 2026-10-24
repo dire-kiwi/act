@@ -113,17 +113,26 @@ func (sd *stepDocker) newStepContainer(ctx context.Context, image string, cmd []
 	envList = append(envList, fmt.Sprintf("%s=%s", "RUNNER_TEMP", "/tmp"))
 
 	binds, mounts := rc.GetBindsAndMounts()
+	networkMode := fmt.Sprintf("container:%s", rc.jobContainerName())
+	workdir := rc.JobContainer.ToContainerPath(rc.Config.Workdir)
+	if rc.IsHostEnv(ctx) {
+		// There is no job container to share a network with, and the workspace
+		// is bound at the container path, as for Docker actions.
+		networkMode = "default"
+		ext := container.LinuxContainerEnvironmentExtensions{}
+		workdir = ext.ToContainerPath(rc.Config.Workdir)
+	}
 	stepContainer := ContainerNewContainer(&container.NewContainerInput{
 		Cmd:         cmd,
 		Entrypoint:  entrypoint,
-		WorkingDir:  rc.JobContainer.ToContainerPath(rc.Config.Workdir),
+		WorkingDir:  workdir,
 		Image:       image,
 		Username:    rc.Config.Secrets["DOCKER_USERNAME"],
 		Password:    rc.Config.Secrets["DOCKER_PASSWORD"],
 		Name:        createContainerName(rc.jobContainerName(), step.ID),
 		Env:         envList,
 		Mounts:      mounts,
-		NetworkMode: fmt.Sprintf("container:%s", rc.jobContainerName()),
+		NetworkMode: networkMode,
 		Binds:       binds,
 		Stdout:      logWriter,
 		Stderr:      logWriter,

@@ -10,6 +10,7 @@ import (
 	"github.com/nektos/act/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	yaml "gopkg.in/yaml.v3"
 )
 
 func TestStepDockerMain(t *testing.T) {
@@ -113,4 +114,44 @@ func TestStepDockerPrePost(t *testing.T) {
 
 	err = sd.post()(ctx)
 	assert.Nil(t, err)
+}
+
+func TestStepDockerContainerOnHost(t *testing.T) {
+	var input *container.NewContainerInput
+	origContainerNewContainer := ContainerNewContainer
+	ContainerNewContainer = func(containerInput *container.NewContainerInput) container.ExecutionsEnvironment {
+		input = containerInput
+		return &containerMock{}
+	}
+	defer (func() {
+		ContainerNewContainer = origContainerNewContainer
+	})()
+
+	ctx := context.Background()
+	workdir := "/work/jobs/1/repo"
+	sd := &stepDocker{
+		RunContext: &RunContext{
+			Config: &Config{
+				Workdir:   workdir,
+				Platforms: map[string]string{"self-hosted": "-self-hosted"},
+			},
+			Run: &model.Run{
+				JobID: "1",
+				Workflow: &model.Workflow{
+					Jobs: map[string]*model.Job{"1": {RawRunsOn: yaml.Node{Kind: yaml.ScalarNode, Value: "self-hosted"}}},
+				},
+			},
+			JobContainer: &container.HostEnvironment{Path: "/work/jobs/1/act/hostexecutor", Workdir: workdir, ActPath: "/work/jobs/1/act/act"},
+		},
+		Step: &model.Step{ID: "1", Uses: "docker://alpine:3"},
+	}
+	sd.RunContext.ExprEval = sd.RunContext.NewExpressionEvaluator(ctx)
+
+	sd.newStepContainer(ctx, "alpine:3", nil, nil)
+
+	// No job container to join; the workspace is bound at its container path.
+	assert.Equal(t, "default", input.NetworkMode)
+	ext := container.LinuxContainerEnvironmentExtensions{}
+	assert.Equal(t, ext.ToContainerPath(workdir), input.WorkingDir)
+	assert.Contains(t, input.Binds, "/work/jobs/1/act/hostexecutor:"+ext.ToContainerPath(workdir))
 }
