@@ -47,6 +47,7 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 			Remove:      true,
 			AuthConfigs: LoadDockerAuthConfigs(ctx),
 			Dockerfile:  input.Dockerfile,
+			NetworkMode: input.NetworkMode,
 		}
 		if input.Platform != "" {
 			parts := strings.SplitN(input.Platform, "/", 2)

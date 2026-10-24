@@ -307,6 +307,7 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, basedir, sub
 				ImageTag:     image,
 				BuildContext: buildContext,
 				Platform:     rc.Config.ContainerArchitecture,
+				NetworkMode:  rc.buildNetworkMode(),
 			})
 		} else {
 			logger.Debugf("image '%s' for architecture '%s' already exists", image, rc.Config.ContainerArchitecture)

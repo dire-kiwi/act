@@ -64,6 +64,7 @@ type NewDockerBuildExecutorInput struct {
 	BuildContext io.Reader
 	ImageTag     string
 	Platform     string
+	NetworkMode  string // network the build's RUN steps use ("" for the daemon's default)
 }
 
 // NewDockerPullExecutorInput the input for the NewDockerPullExecutor function

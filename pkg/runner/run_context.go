@@ -116,6 +116,16 @@ func (rc *RunContext) networkName() (string, bool) {
 	return string(rc.Config.ContainerNetworkMode), false
 }
 
+// buildNetworkMode is the network Docker actions are built on: a
+// user-defined ContainerNetworkMode, so that their RUN steps are confined
+// like the job's containers, or else the daemon's default.
+func (rc *RunContext) buildNetworkMode() string {
+	if rc.Config.ContainerNetworkMode != "" && rc.Config.ContainerNetworkMode.IsUserDefined() {
+		return string(rc.Config.ContainerNetworkMode)
+	}
+	return ""
+}
+
 func getDockerDaemonSocketMountPath(daemonPath string) string {
 	if protoIndex := strings.Index(daemonPath, "://"); protoIndex != -1 {
 		scheme := daemonPath[:protoIndex]
