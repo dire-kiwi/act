@@ -260,7 +260,7 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, basedir, sub
 	} else {
 		// "-dockeraction" enshures that "./", "./test " won't get converted to "act-:latest", "act-test-:latest" which are invalid docker image names
 		image = fmt.Sprintf("%s-dockeraction:%s", regexp.MustCompile("[^a-zA-Z0-9]").ReplaceAllString(actionName, "-"), "latest")
-		image = fmt.Sprintf("act-%s", strings.TrimLeft(image, "-"))
+		image = fmt.Sprintf("%s-%s", rc.containerNamePrefix(), strings.TrimLeft(image, "-"))
 		image = strings.ToLower(image)
 		contextDir, fileName := path.Split(path.Join(subpath, action.Runs.Image))
 

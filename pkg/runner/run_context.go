@@ -90,12 +90,23 @@ func (rc *RunContext) GetEnv() map[string]string {
 }
 
 func (rc *RunContext) jobContainerName() string {
-	return createContainerName("act", rc.String())
+	return createContainerName(rc.containerNamePrefix(), rc.String())
+}
+
+func (rc *RunContext) containerNamePrefix() string {
+	if rc.Config.ContainerNamePrefix != "" {
+		return rc.Config.ContainerNamePrefix
+	}
+	return "act"
 }
 
 // networkName return the name of the network which will be created by `act` automatically for job,
 // only create network if using a service container
 func (rc *RunContext) networkName() (string, bool) {
+	if rc.Config.ContainerNetworkMode != "" && rc.Config.ContainerNetworkMode.IsUserDefined() {
+		// A network the caller manages, for services too.
+		return string(rc.Config.ContainerNetworkMode), false
+	}
 	if len(rc.Run.Job().Services) > 0 {
 		return fmt.Sprintf("%s-%s-network", rc.jobContainerName(), rc.Run.JobID), true
 	}
@@ -148,8 +159,14 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 		return binds, mounts
 	}
 	mounts := map[string]string{
-		"act-toolcache": "/opt/hostedtoolcache",
-		name + "-env":   ext.GetActPath(),
+		name + "-env": ext.GetActPath(),
+	}
+	switch rc.Config.ToolCacheVolume {
+	case "":
+		mounts["act-toolcache"] = "/opt/hostedtoolcache"
+	case "-":
+	default:
+		mounts[rc.Config.ToolCacheVolume] = "/opt/hostedtoolcache"
 	}
 
 	if job := rc.Run.Job(); job != nil {
@@ -256,6 +273,11 @@ func (rc *RunContext) startJobContainer() common.Executor {
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
 		image := rc.platformImage(ctx)
+		if rc.Config.RestrictContainers {
+			if err := rc.checkContainers(ctx); err != nil {
+				return err
+			}
+		}
 		rawLogger := logger.WithField("raw_output", true)
 		logWriter := common.NewLineWriter(rc.commandHandler(ctx), func(s string) bool {
 			if rc.Config.LogOutput {
@@ -342,7 +364,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				Privileged:     rc.Config.Privileged,
 				UsernsMode:     rc.Config.UsernsMode,
 				Platform:       rc.Config.ContainerArchitecture,
-				Options:        rc.ExprEval.Interpolate(ctx, spec.Options),
+				Options:        joinOptions(rc.ExprEval.Interpolate(ctx, spec.Options), rc.Config.ContainerOptions),
 				NetworkMode:    networkName,
 				NetworkAliases: []string{serviceID},
 				ExposedPorts:   exposedPorts,
@@ -784,10 +806,16 @@ func (rc *RunContext) options(ctx context.Context) string {
 	job := rc.Run.Job()
 	c := job.Container()
 	if c != nil {
-		return rc.ExprEval.Interpolate(ctx, c.Options)
+		return joinOptions(rc.ExprEval.Interpolate(ctx, c.Options), rc.Config.ContainerOptions)
 	}
 
 	return rc.Config.ContainerOptions
+}
+
+// joinOptions puts the runner's container options after the workflow's, so
+// that they win where both set the same thing.
+func joinOptions(workflow, runner string) string {
+	return strings.TrimSpace(workflow + " " + runner)
 }
 
 func (rc *RunContext) isEnabled(ctx context.Context) (bool, error) {

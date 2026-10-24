@@ -46,7 +46,10 @@ type Config struct {
 	UsernsMode                         string                       // user namespace to use
 	ContainerArchitecture              string                       // Desired OS/architecture platform for running containers
 	ContainerDaemonSocket              string                       // Path to Docker daemon socket
-	ContainerOptions                   string                       // Options for the job container
+	ContainerOptions                   string                       // Options for the job container, and for service and step containers; they follow the workflow's own container options
+	ContainerNamePrefix                string                       // prefix of the containers, volumes, networks and action images created for the job (default "act"); a prefix of its own lets jobs share a Docker daemon
+	ToolCacheVolume                    string                       // volume mounted at /opt/hostedtoolcache in job containers (default "act-toolcache"; "-" for none)
+	RestrictContainers                 bool                         // refuse workflow container and service options and volumes that reach outside the container
 	UseGitIgnore                       bool                         // controls if paths in .gitignore should not be copied into container, default true
 	GitHubInstance                     string                       // GitHub instance to use, default "github.com"
 	ContainerCapAdd                    []string                     // list of kernel capabilities to add to the containers
