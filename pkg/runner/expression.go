@@ -483,6 +483,13 @@ func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *mod
 	inputs := map[string]interface{}{}
 
 	setupWorkflowInputs(ctx, &inputs, rc)
+	// A called workflow's inputs evaluated by whoever ran its caller.
+	called := rc.Config != nil && rc.Config.WorkflowCallInputs != nil
+	if called {
+		for k, v := range rc.Config.WorkflowCallInputs {
+			inputs[k] = v
+		}
+	}
 
 	var env map[string]string
 	if step != nil {
@@ -497,7 +504,7 @@ func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *mod
 		}
 	}
 
-	if rc.caller == nil && ghc.EventName == "workflow_dispatch" {
+	if rc.caller == nil && !called && ghc.EventName == "workflow_dispatch" {
 		config := rc.Run.Workflow.WorkflowDispatchConfig()
 		if config != nil && config.Inputs != nil {
 			for k, v := range config.Inputs {
@@ -514,7 +521,7 @@ func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *mod
 		}
 	}
 
-	if ghc.EventName == "workflow_call" {
+	if !called && ghc.EventName == "workflow_call" {
 		config := rc.Run.Workflow.WorkflowCallConfig()
 		if config != nil && config.Inputs != nil {
 			for k, v := range config.Inputs {

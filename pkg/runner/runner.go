@@ -37,6 +37,7 @@ type Config struct {
 	LogPrefixJobID                     bool                         // switches from the full job name to the job id
 	Env                                map[string]string            // env for containers
 	Inputs                             map[string]string            // manually passed action inputs
+	WorkflowCallInputs                 map[string]any               // the inputs context of a job in a reusable workflow its caller ran elsewhere (kiwicd); nil otherwise
 	Secrets                            map[string]string            // list of secrets
 	Vars                               map[string]string            // list of vars
 	Token                              string                       // GitHub token

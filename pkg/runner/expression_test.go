@@ -371,3 +371,12 @@ func TestRewriteSubExpressionForceFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowCallInputs(t *testing.T) {
+	rc := createRunContext(t)
+	rc.Config.WorkflowCallInputs = map[string]any{"name": "app", "debug": true, "count": 3.0}
+	rc.Run.Workflow.RawOn = yaml.Node{Kind: yaml.ScalarNode, Value: "workflow_dispatch"}
+	ghc := &model.GithubContext{EventName: "workflow_dispatch", Event: map[string]any{"inputs": map[string]any{"name": "dispatched"}}}
+	inputs := getEvaluatorInputs(context.Background(), rc, nil, ghc)
+	assert.Equal(t, map[string]any{"name": "app", "debug": true, "count": 3.0}, inputs)
+}
