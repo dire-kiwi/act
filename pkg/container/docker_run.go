@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -194,6 +195,45 @@ func (cr *containerReference) GetHealth(ctx context.Context) Health {
 		return HealthUnHealthy
 	}
 	return HealthUnHealthy
+}
+
+// Inspect reports the container's ID, networks and the host ports its
+// published ports are on. A port published on several host addresses (IPv4
+// and IPv6) has the same host port on each, so the first one is reported.
+func (cr *containerReference) Inspect(ctx context.Context) (Details, error) {
+	if err := cr.connect()(ctx); err != nil {
+		return Details{}, err
+	}
+	if err := cr.find()(ctx); err != nil {
+		return Details{}, err
+	}
+	if cr.id == "" {
+		return Details{}, fmt.Errorf("container %s not found", cr.input.Name)
+	}
+	result, err := cr.cli.ContainerInspect(ctx, cr.id, client.ContainerInspectOptions{})
+	if err != nil {
+		return Details{}, err
+	}
+	d := Details{ID: cr.id, Ports: map[string]string{}}
+	settings := result.Container.NetworkSettings
+	if settings == nil {
+		return d, nil
+	}
+	for name := range settings.Networks {
+		d.Networks = append(d.Networks, name)
+	}
+	sort.Strings(d.Networks)
+	for port, bindings := range settings.Ports {
+		if len(bindings) == 0 || bindings[0].HostPort == "" {
+			continue
+		}
+		key := strconv.Itoa(int(port.Num()))
+		if port.Proto() != network.TCP {
+			key += "/" + string(port.Proto())
+		}
+		d.Ports[key] = bindings[0].HostPort
+	}
+	return d, nil
 }
 
 func (cr *containerReference) ReplaceLogWriter(stdout io.Writer, stderr io.Writer) (io.Writer, io.Writer) {

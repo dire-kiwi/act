@@ -24,3 +24,8 @@ jobs:
           echo "id: ${{ job.services.postgres.id }}"
           echo "network: ${{ job.services.postgres.network }}"
           echo "ports: ${{ job.services.postgres.ports }}"
+      - name: The service's ID, network and host port are in the job context
+        run: |
+          test -n "${{ job.services.postgres.id }}"
+          test -n "${{ job.services.postgres.network }}"
+          test "${{ job.services.postgres.ports[5432] }}" = 5432

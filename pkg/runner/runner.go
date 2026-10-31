@@ -51,6 +51,7 @@ type Config struct {
 	ContainerNamePrefix                string                       // prefix of the containers, volumes, networks and action images created for the job (default "act"); a prefix of its own lets jobs share a Docker daemon
 	ToolCacheVolume                    string                       // volume mounted at /opt/hostedtoolcache in job containers (default "act-toolcache"; "-" for none)
 	RestrictContainers                 bool                         // refuse workflow container and service options and volumes that reach outside the container
+	ServicePortHostIP                  string                       // host address service ports are published on when the workflow names none (default: all of them), e.g. 127.0.0.1; under RestrictContainers they are not published
 	UseGitIgnore                       bool                         // controls if paths in .gitignore should not be copied into container, default true
 	GitHubInstance                     string                       // GitHub instance to use, default "github.com"
 	ContainerCapAdd                    []string                     // list of kernel capabilities to add to the containers

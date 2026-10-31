@@ -538,6 +538,10 @@ func TestContexts(t *testing.T) {
 		{"github.event.pull_request.labels.*.name", nil, "github-context-noexist-prop"},
 		{"env.TEST", "value", "env-context"},
 		{"job.status", "success", "job-context"},
+		{"job.services.db.ports[5432]", "49153", "job-services-ports-number"},
+		{"job.services.db.ports['5432']", "49153", "job-services-ports-string"},
+		{"job.services.db.ports[5433]", nil, "job-services-ports-missing"},
+		{"job.services.db.network", "net", "job-services-network"},
 		{"steps.step-id.outputs.name", "value", "steps-context"},
 		{"steps.step-id.conclusion", "success", "steps-context-conclusion"},
 		{"steps.step-id.conclusion && true", true, "steps-context-conclusion"},
@@ -576,6 +580,9 @@ func TestContexts(t *testing.T) {
 		},
 		Job: &model.JobContext{
 			Status: "success",
+			Services: map[string]model.JobServiceContext{
+				"db": {ID: "abc", Network: "net", Ports: map[string]string{"5432": "49153"}},
+			},
 		},
 		Steps: map[string]*model.StepResult{
 			"step-id": {

@@ -1,0 +1,26 @@
+name: services-host
+on: push
+jobs:
+  services:
+    runs-on: ubuntu-latest
+    services:
+      web:
+        image: nginx:alpine
+        ports:
+          - 80
+        options: >-
+          --health-cmd "wget -qO /dev/null http://localhost/"
+          --health-interval 1s
+          --health-retries 30
+    steps:
+      - name: The service is on a host port
+        shell: bash
+        run: |
+          test -n "${{ job.services.web.id }}"
+          test -n "${{ job.services.web.network }}"
+          test "${{ job.container.network }}" = "${{ job.services.web.network }}"
+          port="${{ job.services.web.ports[80] }}"
+          test -n "$port"
+          exec 3<>"/dev/tcp/127.0.0.1/$port"
+          printf 'GET / HTTP/1.0\r\n\r\n' >&3
+          grep -q nginx <&3

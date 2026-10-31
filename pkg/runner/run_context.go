@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,8 @@ type RunContext struct {
 	ExprEval            ExpressionEvaluator
 	JobContainer        container.ExecutionsEnvironment
 	ServiceContainers   []container.ExecutionsEnvironment
+	services            []jobService      // the job's services, in the order of ServiceContainers
+	containerContext    *model.JobContext // job.container and job.services, once they're started
 	OutputMappings      map[MappableOutput]MappableOutput
 	JobName             string
 	ActionPath          string
@@ -265,16 +268,40 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
 			}
 		}
 
+		copyFiles := rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
+			Name: "workflow/event.json",
+			Mode: 0o644,
+			Body: rc.EventJSON,
+		}, &container.FileEntry{
+			Name: "workflow/envs.txt",
+			Mode: 0o666,
+			Body: "",
+		})
+		if len(rc.Run.Job().Services) == 0 {
+			return copyFiles(ctx)
+		}
+
+		// Services run in containers on a network of their own, as for a
+		// container job, with their ports published on the host.
+		if rc.Config.RestrictContainers {
+			if err := rc.checkContainers(ctx); err != nil {
+				return err
+			}
+		}
+		networkName, createAndDeleteNetwork := rc.networkName()
+		if err := rc.newServiceContainers(ctx, networkName, logWriter); err != nil {
+			return err
+		}
+		removeServices := rc.removeServiceContainers(networkName, createAndDeleteNetwork)
+		rc.cleanUpJobContainer = rc.JobContainer.Remove().Finally(removeServices)
 		return common.NewPipelineExecutor(
-			rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
-				Name: "workflow/event.json",
-				Mode: 0o644,
-				Body: rc.EventJSON,
-			}, &container.FileEntry{
-				Name: "workflow/envs.txt",
-				Mode: 0o666,
-				Body: "",
-			}),
+			copyFiles,
+			rc.pullServicesImages(rc.Config.ForcePull),
+			removeServices,
+			container.NewDockerNetworkCreateExecutor(networkName).IfBool(createAndDeleteNetwork),
+			rc.startServiceContainers(networkName),
+			rc.waitForServiceContainers(),
+			rc.inspectContainers(networkName).IfNot(common.Dryrun),
 		)(ctx)
 	}
 }
@@ -322,65 +349,8 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		// and it will be removed after at last.
 		networkName, createAndDeleteNetwork := rc.networkName()
 
-		// add service containers
-		for serviceID, spec := range rc.Run.Job().Services {
-			// interpolate env
-			interpolatedEnvs := make(map[string]string, len(spec.Env))
-			for k, v := range spec.Env {
-				interpolatedEnvs[k] = rc.ExprEval.Interpolate(ctx, v)
-			}
-			envs := make([]string, 0, len(interpolatedEnvs))
-			for k, v := range interpolatedEnvs {
-				envs = append(envs, fmt.Sprintf("%s=%s", k, v))
-			}
-			username, password, err = rc.handleServiceCredentials(ctx, spec.Credentials)
-			if err != nil {
-				return fmt.Errorf("failed to handle service %s credentials: %w", serviceID, err)
-			}
-
-			interpolatedVolumes := make([]string, 0, len(spec.Volumes))
-			for _, volume := range spec.Volumes {
-				interpolatedVolumes = append(interpolatedVolumes, rc.ExprEval.Interpolate(ctx, volume))
-			}
-			serviceBinds, serviceMounts := rc.GetServiceBindsAndMounts(interpolatedVolumes)
-
-			interpolatedPorts := make([]string, 0, len(spec.Ports))
-			for _, port := range spec.Ports {
-				interpolatedPorts = append(interpolatedPorts, rc.ExprEval.Interpolate(ctx, port))
-			}
-			exposedPorts, portBindings, err := nat.ParsePortSpecs(interpolatedPorts)
-			if err != nil {
-				return fmt.Errorf("failed to parse service %s ports: %w", serviceID, err)
-			}
-
-			imageName := rc.ExprEval.Interpolate(ctx, spec.Image)
-			if imageName == "" {
-				logger.Infof("The service '%s' will not be started because the container definition has an empty image.", serviceID)
-				continue
-			}
-
-			serviceContainerName := createContainerName(rc.jobContainerName(), serviceID)
-			c := container.NewContainer(&container.NewContainerInput{
-				Name:           serviceContainerName,
-				WorkingDir:     ext.ToContainerPath(rc.Config.Workdir),
-				Image:          imageName,
-				Username:       username,
-				Password:       password,
-				Env:            envs,
-				Mounts:         serviceMounts,
-				Binds:          serviceBinds,
-				Stdout:         logWriter,
-				Stderr:         logWriter,
-				Privileged:     rc.Config.Privileged,
-				UsernsMode:     rc.Config.UsernsMode,
-				Platform:       rc.Config.ContainerArchitecture,
-				Options:        joinOptions(rc.ExprEval.Interpolate(ctx, spec.Options), rc.Config.ContainerOptions),
-				NetworkMode:    networkName,
-				NetworkAliases: []string{serviceID},
-				ExposedPorts:   exposedPorts,
-				PortBindings:   portBindings,
-			})
-			rc.ServiceContainers = append(rc.ServiceContainers, c)
+		if err := rc.newServiceContainers(ctx, networkName, logWriter); err != nil {
+			return err
 		}
 
 		rc.cleanUpJobContainer = func(ctx context.Context) error {
@@ -392,25 +362,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				return rc.JobContainer.Remove().IfNot(reuseJobContainer).
 					Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName(), false)).IfNot(reuseJobContainer).
 					Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName()+"-env", false)).IfNot(reuseJobContainer).
-					Then(func(ctx context.Context) error {
-						if len(rc.ServiceContainers) > 0 {
-							logger.Infof("Cleaning up services for job %s", rc.JobName)
-							if err := rc.stopServiceContainers()(ctx); err != nil {
-								logger.Errorf("Error while cleaning services: %v", err)
-							}
-							if createAndDeleteNetwork {
-								// clean network if it has been created by act
-								// if using service containers
-								// it means that the network to which containers are connecting is created by `act_runner`,
-								// so, we should remove the network at last.
-								logger.Infof("Cleaning up network for job %s, and network name is: %s", rc.JobName, networkName)
-								if err := container.NewDockerNetworkRemoveExecutor(networkName)(ctx); err != nil {
-									logger.Errorf("Error while cleaning network: %v", err)
-								}
-							}
-						}
-						return nil
-					})(ctx)
+					Then(rc.removeServiceContainers(networkName, createAndDeleteNetwork))(ctx)
 			}
 			return nil
 		}
@@ -464,7 +416,173 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				Body: "",
 			}),
 			rc.waitForServiceContainers(),
+			rc.inspectContainers(jobContainerNetwork).IfNot(common.Dryrun),
 		)(ctx)
+	}
+}
+
+// jobService is a service of the job: its ID and the ports it lists.
+type jobService struct {
+	id    string
+	ports nat.PortSet
+}
+
+// newServiceContainers prepares the job's service containers, on
+// networkName with their IDs as aliases. A service's ports are published
+// on the host as well, on Config.ServicePortHostIP unless they name an
+// address, so that a job on the host reaches them on localhost. Under
+// RestrictContainers they aren't: that would open ports on the host, and
+// fixed ones would clash between jobs.
+func (rc *RunContext) newServiceContainers(ctx context.Context, networkName string, logWriter io.Writer) error {
+	logger := common.Logger(ctx)
+	ext := container.LinuxContainerEnvironmentExtensions{}
+	services := rc.Run.Job().Services
+	ids := make([]string, 0, len(services))
+	for id := range services {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, serviceID := range ids {
+		spec := services[serviceID]
+		// interpolate env
+		interpolatedEnvs := make(map[string]string, len(spec.Env))
+		for k, v := range spec.Env {
+			interpolatedEnvs[k] = rc.ExprEval.Interpolate(ctx, v)
+		}
+		envs := make([]string, 0, len(interpolatedEnvs))
+		for k, v := range interpolatedEnvs {
+			envs = append(envs, fmt.Sprintf("%s=%s", k, v))
+		}
+		username, password, err := rc.handleServiceCredentials(ctx, spec.Credentials)
+		if err != nil {
+			return fmt.Errorf("failed to handle service %s credentials: %w", serviceID, err)
+		}
+
+		interpolatedVolumes := make([]string, 0, len(spec.Volumes))
+		for _, volume := range spec.Volumes {
+			interpolatedVolumes = append(interpolatedVolumes, rc.ExprEval.Interpolate(ctx, volume))
+		}
+		serviceBinds, serviceMounts := rc.GetServiceBindsAndMounts(interpolatedVolumes)
+
+		interpolatedPorts := make([]string, 0, len(spec.Ports))
+		for _, port := range spec.Ports {
+			interpolatedPorts = append(interpolatedPorts, rc.ExprEval.Interpolate(ctx, port))
+		}
+		exposedPorts, portBindings, err := nat.ParsePortSpecs(interpolatedPorts)
+		if err != nil {
+			return fmt.Errorf("failed to parse service %s ports: %w", serviceID, err)
+		}
+		if rc.Config.RestrictContainers {
+			portBindings = nil
+		} else if ip := rc.Config.ServicePortHostIP; ip != "" {
+			for _, bindings := range portBindings {
+				for i := range bindings {
+					if bindings[i].HostIP == "" {
+						bindings[i].HostIP = ip
+					}
+				}
+			}
+		}
+
+		imageName := rc.ExprEval.Interpolate(ctx, spec.Image)
+		if imageName == "" {
+			logger.Infof("The service '%s' will not be started because the container definition has an empty image.", serviceID)
+			continue
+		}
+
+		serviceContainerName := createContainerName(rc.jobContainerName(), serviceID)
+		c := container.NewContainer(&container.NewContainerInput{
+			Name:           serviceContainerName,
+			WorkingDir:     ext.ToContainerPath(rc.Config.Workdir),
+			Image:          imageName,
+			Username:       username,
+			Password:       password,
+			Env:            envs,
+			Mounts:         serviceMounts,
+			Binds:          serviceBinds,
+			Stdout:         logWriter,
+			Stderr:         logWriter,
+			Privileged:     rc.Config.Privileged,
+			UsernsMode:     rc.Config.UsernsMode,
+			Platform:       rc.Config.ContainerArchitecture,
+			Options:        joinOptions(rc.ExprEval.Interpolate(ctx, spec.Options), rc.Config.ContainerOptions),
+			NetworkMode:    networkName,
+			NetworkAliases: []string{serviceID},
+			ExposedPorts:   exposedPorts,
+			PortBindings:   portBindings,
+		})
+		rc.ServiceContainers = append(rc.ServiceContainers, c)
+		rc.services = append(rc.services, jobService{id: serviceID, ports: exposedPorts})
+	}
+	return nil
+}
+
+// removeServiceContainers removes the job's service containers, and the
+// network if act created it for them.
+func (rc *RunContext) removeServiceContainers(networkName string, removeNetwork bool) common.Executor {
+	return func(ctx context.Context) error {
+		if len(rc.ServiceContainers) == 0 {
+			return nil
+		}
+		logger := common.Logger(ctx)
+		logger.Infof("Cleaning up services for job %s", rc.JobName)
+		if err := rc.stopServiceContainers()(ctx); err != nil {
+			logger.Errorf("Error while cleaning services: %v", err)
+		}
+		if removeNetwork {
+			logger.Infof("Cleaning up network for job %s, and network name is: %s", rc.JobName, networkName)
+			if err := container.NewDockerNetworkRemoveExecutor(networkName)(ctx); err != nil {
+				logger.Errorf("Error while cleaning network: %v", err)
+			}
+		}
+		return nil
+	}
+}
+
+// inspectContainers fills in job.container and job.services from the
+// started containers: their IDs, network and services' host ports. Under
+// RestrictContainers, where service ports aren't published, a port maps to
+// itself, for jobs that reach the service by name.
+func (rc *RunContext) inspectContainers(network string) common.Executor {
+	return func(ctx context.Context) error {
+		jc := &model.JobContext{Services: map[string]model.JobServiceContext{}}
+		if network != "host" {
+			jc.Container.Network = network
+		}
+		if i, ok := rc.JobContainer.(container.Inspector); ok {
+			d, err := i.Inspect(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to inspect the job container: %w", err)
+			}
+			jc.Container.ID = d.ID
+		}
+		for n, c := range rc.ServiceContainers {
+			service := rc.services[n]
+			svc := model.JobServiceContext{Ports: map[string]string{}}
+			if i, ok := c.(container.Inspector); ok {
+				d, err := i.Inspect(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to inspect service %s: %w", service.id, err)
+				}
+				svc.ID = d.ID
+				svc.Ports = d.Ports
+				if len(d.Networks) > 0 {
+					svc.Network = d.Networks[0]
+				}
+			}
+			if rc.Config.RestrictContainers {
+				for port := range service.ports {
+					key := port.Port()
+					if port.Proto() != "tcp" {
+						key += "/" + port.Proto()
+					}
+					svc.Ports[key] = port.Port()
+				}
+			}
+			jc.Services[service.id] = svc
+		}
+		rc.containerContext = jc
+		return nil
 	}
 }
 
@@ -615,7 +733,7 @@ func (rc *RunContext) startServiceContainers(_ string) common.Executor {
 	}
 }
 
-func (rc *RunContext) waitForServiceContainer(c container.ExecutionsEnvironment) common.Executor {
+func (rc *RunContext) waitForServiceContainer(id string, c container.ExecutionsEnvironment) common.Executor {
 	return func(ctx context.Context) error {
 		sctx, cancel := context.WithTimeout(ctx, time.Minute*5)
 		defer cancel()
@@ -635,15 +753,15 @@ func (rc *RunContext) waitForServiceContainer(c container.ExecutionsEnvironment)
 		if health == container.HealthHealthy {
 			return nil
 		}
-		return fmt.Errorf("service container failed to start")
+		return fmt.Errorf("service %s failed to start (its health check didn't pass)", id)
 	}
 }
 
 func (rc *RunContext) waitForServiceContainers() common.Executor {
 	return func(ctx context.Context) error {
 		execs := []common.Executor{}
-		for _, c := range rc.ServiceContainers {
-			execs = append(execs, rc.waitForServiceContainer(c))
+		for i, c := range rc.ServiceContainers {
+			execs = append(execs, rc.waitForServiceContainer(rc.services[i].id, c))
 		}
 		return common.NewParallelExecutor(len(execs), execs...)(ctx)
 	}
@@ -907,9 +1025,12 @@ func (rc *RunContext) getJobContext() *model.JobContext {
 			}
 		}
 	}
-	return &model.JobContext{
-		Status: jobStatus,
+	jc := &model.JobContext{Status: jobStatus}
+	if rc.containerContext != nil {
+		jc.Container = rc.containerContext.Container
+		jc.Services = rc.containerContext.Services
 	}
+	return jc
 }
 
 func (rc *RunContext) getStepsContext() map[string]*model.StepResult {
@@ -1188,15 +1309,9 @@ func (rc *RunContext) handleServiceCredentials(ctx context.Context, creds map[st
 }
 
 // GetServiceBindsAndMounts returns the binds and mounts for the service container, resolving paths as appropriate
+// Unlike the job container they don't get the Docker socket, as on GitHub.
 func (rc *RunContext) GetServiceBindsAndMounts(svcVolumes []string) ([]string, map[string]string) {
-	if rc.Config.ContainerDaemonSocket == "" {
-		rc.Config.ContainerDaemonSocket = "/var/run/docker.sock"
-	}
 	binds := []string{}
-	if rc.Config.ContainerDaemonSocket != "-" {
-		daemonPath := getDockerDaemonSocketMountPath(rc.Config.ContainerDaemonSocket)
-		binds = append(binds, fmt.Sprintf("%s:%s", daemonPath, "/var/run/docker.sock"))
-	}
 
 	mounts := map[string]string{}
 

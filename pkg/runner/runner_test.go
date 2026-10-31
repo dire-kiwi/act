@@ -570,6 +570,7 @@ func TestRunEventHostEnvironment(t *testing.T) {
 			{workdir, "uses-action-with-pre-and-post-step", "push", "", platforms, secrets},
 			{workdir, "evalenv", "push", "", platforms, secrets},
 			{workdir, "ensure-post-steps", "push", "Job 'second-post-step-should-fail' failed", platforms, secrets},
+			{workdir, "services-host", "push", "", platforms, secrets},
 		}...)
 	}
 	if runtime.GOOS == "windows" {

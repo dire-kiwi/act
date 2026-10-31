@@ -83,3 +83,17 @@ const (
 	HealthHealthy
 	HealthUnHealthy
 )
+
+// Details are what a started container's job context shows of it.
+type Details struct {
+	ID       string
+	Networks []string
+	// Ports maps the container's published ports ("5432", or "53/udp"
+	// where only UDP is published) to their host ports.
+	Ports map[string]string
+}
+
+// Inspector is a container that can report its Details.
+type Inspector interface {
+	Inspect(ctx context.Context) (Details, error)
+}
